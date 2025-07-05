@@ -10,10 +10,10 @@ load_dotenv()
 # instantiate agent
 agent = Agent(
     name="twitter_scorer",
-    seed="secret_seed_phrase",
-    port=8000,
-    endpoint=["http://localhost:8000/submit"]
-)
+    seed="s66767778788789799797789t565e",
+    mailbox=True,
+    publish_agent_details=True
+    )
 
 # Initialize OpenAI client
 client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -220,4 +220,46 @@ async def handle_message(ctx: Context, sender: str, message: str):
         await ctx.send(sender, json.dumps(error_response, indent=2))
 
 if __name__ == "__main__":
-    agent.run()
+    import sys
+    import json
+    
+    # Check if called with command line arguments for analysis
+    if len(sys.argv) > 2 and sys.argv[1] == "--analyze-tweet":
+        try:
+            # Suppress warnings and other output
+            import warnings
+            warnings.filterwarnings("ignore")
+            
+            # Redirect stderr to avoid warnings in output
+            import os
+            import sys
+            stderr = sys.stderr
+            sys.stderr = open(os.devnull, 'w')
+            
+            tweet_data = json.loads(sys.argv[2])
+            result = score_tweet_content(tweet_data["content"])
+            
+            # Restore stderr
+            sys.stderr.close()
+            sys.stderr = stderr
+            
+            # Output JSON result to stdout
+            print(json.dumps({
+                "score": result["score"],
+                "sentiment": result["sentiment"],
+                "explanation": result["explanation"]
+            }))
+        except Exception as e:
+            # Restore stderr in case of error
+            if 'stderr' in locals():
+                sys.stderr.close()
+                sys.stderr = stderr
+            
+            print(json.dumps({
+                "score": 0,
+                "sentiment": "Neutral",
+                "explanation": f"Error: {str(e)}"
+            }))
+    else:
+        # Run the agent normally
+        agent.run()

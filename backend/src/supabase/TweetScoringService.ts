@@ -1,6 +1,6 @@
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import * as dotenv from "dotenv";
-import OpenAI from "openai";
+import { spawn } from "child_process";
 
 dotenv.config();
 
@@ -27,94 +27,122 @@ interface ScoredTweet extends Tweet {
 
 class TweetScoringService {
   private supabase: SupabaseClient;
-  private openai: OpenAI;
   private isRunning: boolean = false;
   private checkInterval: number = 30000; // Check every 30 seconds
 
   constructor() {
     const supabaseUrl = process.env.SUPABASE_URL || "";
     const supabaseKey = process.env.SUPABASE_KEY || "";
-    const openaiKey = process.env.OPENAI_API_KEY || "";
 
     if (!supabaseUrl || !supabaseKey) {
       throw new Error("Supabase credentials not found in environment variables");
     }
 
-    if (!openaiKey) {
-      throw new Error("OpenAI API key not found in environment variables");
-    }
-
     this.supabase = createClient(supabaseUrl, supabaseKey);
-    this.openai = new OpenAI({ apiKey: openaiKey });
   }
 
   /**
-   * Analyze tweet content using ChatGPT
+   * Analyze tweet content using the Python agent
    */
-  private async analyzeTweetWithGPT(content: string): Promise<{
+  private async analyzeTweetWithAgent(content: string): Promise<{
     score: number;
     sentiment: string;
     explanation: string;
   }> {
-    try {
-      const prompt = `
-        Analyze the following tweet about Flow blockchain and provide:
-        1. A sentiment score between -100 and +100 (negative to positive)
-        2. A sentiment category: "Positive", "Neutral", or "Negative"
-        3. A brief explanation of your analysis
+    return new Promise((resolve, reject) => {
+      try {
+        // Create a mock tweet for the agent
+        const mockTweet = {
+          id: Date.now(), // Use timestamp as temporary ID
+          content: content,
+          author: "temp_author"
+        };
 
-        Tweet: "${content}"
+        // Spawn Python process to run the agent
+        const pythonProcess = spawn('python3', [
+          'src/agent/my_first_agent.py',
+          '--analyze-tweet',
+          JSON.stringify(mockTweet)
+        ]);
 
-        Respond in JSON format:
-        {
-          "score": <number between -100 and 100>,
-          "sentiment": "<Positive/Neutral/Negative>",
-          "explanation": "<brief explanation>"
-        }
-      `;
+        let output = '';
+        let errorOutput = '';
 
-      const response = await this.openai.chat.completions.create({
-        model: "gpt-3.5-turbo",
-        messages: [
-          {
-            role: "system",
-            content: "You are a sentiment analysis expert. Always respond with valid JSON.",
-          },
-          { role: "user", content: prompt },
-        ],
-        temperature: 0.3,
-        max_tokens: 200,
-      });
+        pythonProcess.stdout.on('data', (data) => {
+          output += data.toString();
+        });
 
-      const responseText = response.choices[0].message.content?.trim() || "";
-      
-      // Extract JSON from response
-      const startIdx = responseText.indexOf("{");
-      const endIdx = responseText.lastIndexOf("}") + 1;
-      
-      if (startIdx === -1 || endIdx === 0) {
-        throw new Error("No JSON found in GPT response");
+        pythonProcess.stderr.on('data', (data) => {
+          errorOutput += data.toString();
+        });
+
+        pythonProcess.on('close', (code) => {
+          if (code === 0) {
+            try {
+              // Try to extract JSON from the output (handle warnings)
+              const lines = output.split('\n');
+              let jsonLine = '';
+              
+              // Find the line that contains JSON
+              for (const line of lines) {
+                if (line.trim().startsWith('{') && line.trim().endsWith('}')) {
+                  jsonLine = line.trim();
+                  break;
+                }
+              }
+              
+              if (jsonLine) {
+                const result = JSON.parse(jsonLine);
+                resolve({
+                  score: result.score || 0,
+                  sentiment: result.sentiment || "Neutral",
+                  explanation: result.explanation || "Analysis completed",
+                });
+              } else {
+                console.error("No JSON found in agent output:", output);
+                resolve({
+                  score: 0,
+                  sentiment: "Neutral",
+                  explanation: "No JSON response from agent",
+                });
+              }
+            } catch (parseError) {
+              console.error("Error parsing agent response:", parseError);
+              console.error("Raw output:", output);
+              resolve({
+                score: 0,
+                sentiment: "Neutral",
+                explanation: "Failed to parse agent response",
+              });
+            }
+          } else {
+            console.error("Agent process failed:", errorOutput);
+            resolve({
+              score: 0,
+              sentiment: "Neutral",
+              explanation: `Agent analysis failed: ${errorOutput}`,
+            });
+          }
+        });
+
+        pythonProcess.on('error', (error) => {
+          console.error("Error spawning agent process:", error);
+          resolve({
+            score: 0,
+            sentiment: "Neutral",
+            explanation: `Agent process error: ${error.message}`,
+          });
+        });
+
+      } catch (error) {
+        console.error("Error in agent analysis:", error);
+        resolve({
+          score: 0,
+          sentiment: "Neutral",
+          explanation: `Agent analysis failed: ${error}`,
+        });
       }
-
-      const jsonStr = responseText.substring(startIdx, endIdx);
-      const result = JSON.parse(jsonStr);
-
-      // Ensure score is within bounds
-      const score = Math.max(-100, Math.min(100, result.score || 0));
-
-      return {
-        score,
-        sentiment: result.sentiment || "Neutral",
-        explanation: result.explanation || "Analysis completed",
-      };
-    } catch (error) {
-      console.error("Error in GPT analysis:", error);
-      return {
-        score: 0,
-        sentiment: "Neutral",
-        explanation: `GPT analysis failed: ${error}`,
-      };
-    }
+    });
   }
 
   /**
@@ -172,7 +200,7 @@ class TweetScoringService {
       const tweetContent = tweet.full_text || tweet.text;
       console.log(`🤖 Analyzing tweet ${tweet.id}: "${tweetContent.substring(0, 50)}..."`);
       
-      const analysis = await this.analyzeTweetWithGPT(tweetContent);
+      const analysis = await this.analyzeTweetWithAgent(tweetContent);
       
       await this.updateTweetScore(tweet.id, analysis.score);
     } catch (error) {
