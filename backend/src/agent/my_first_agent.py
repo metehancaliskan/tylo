@@ -1,6 +1,11 @@
 from uagents import Agent, Context, Model
 import re
 import json
+import os
+import openai
+from typing import Dict, Any
+from dotenv import load_dotenv
+load_dotenv()
 
 # instantiate agent
 agent = Agent(
@@ -10,76 +15,124 @@ agent = Agent(
     endpoint=["http://localhost:8000/submit"]
 )
 
+# Initialize OpenAI client
+client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
 # Mock Twitter posts for testing
 mock_tweets = [
     {
         "id": 1,
         "content": "Flow blockchain is absolutely amazing! The speed and scalability are incredible. Best developer experience I've ever had. #Flow #Blockchain #Innovation",
         "author": "@crypto_enthusiast"
+    },
+    {
+        "id": 2,
+        "content": "Flow is such a disappointment. Slow, expensive, and the documentation is terrible. Waste of time and money. Avoid this garbage! #Flow #Disappointed",
+        "author": "@frustrated_dev"
     }
 ]
 
+def analyze_tweet_with_gpt(tweet_content: str) -> Dict[str, Any]:
+    """
+    Analyze tweet content using ChatGPT and return score and sentiment
+    """
+    try:
+        if not client:
+            raise ValueError("OpenAI client not found in environment variables")
+        
+        prompt = f"""
+        Analyze the following tweet about Flow blockchain and provide:
+        1. A sentiment score between -100 and +100 (negative to positive)
+        2. A sentiment category: "Positive", "Neutral", or "Negative"
+        3. A brief explanation of your analysis
+        
+        Tweet: "{tweet_content}"
+        
+        Respond in JSON format:
+        {{
+            "score": <number between -100 and 100>,
+            "sentiment": "<Positive/Neutral/Negative>",
+            "explanation": "<brief explanation>"
+        }}
+        """
+        
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are a sentiment analysis expert. Always respond with valid JSON."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.3,
+            max_tokens=200
+        )
+        
+        # Extract and parse JSON response
+        response_text = response.choices[0].message.content.strip()
+        
+        # Try to extract JSON from the response
+        try:
+            # Look for JSON in the response
+            start_idx = response_text.find('{')
+            end_idx = response_text.rfind('}') + 1
+            if start_idx != -1 and end_idx != 0:
+                json_str = response_text[start_idx:end_idx]
+                result = json.loads(json_str)
+            else:
+                raise ValueError("No JSON found in response")
+                
+        except json.JSONDecodeError:
+            # Fallback: create a basic response
+            result = {
+                "score": 0,
+                "sentiment": "Neutral",
+                "explanation": "Could not parse GPT response"
+            }
+        
+        # Ensure score is within bounds
+        score = max(-100, min(100, result.get("score", 0)))
+        
+        return {
+            "score": score,
+            "sentiment": result.get("sentiment", "Neutral"),
+            "explanation": result.get("explanation", "Analysis completed"),
+            "gpt_response": response_text
+        }
+        
+    except Exception as e:
+        print(f"Error in GPT analysis: {e}")
+        # Fallback to basic scoring
+        return {
+            "score": 0,
+            "sentiment": "Neutral",
+            "explanation": f"GPT analysis failed: {str(e)}",
+            "gpt_response": None
+        }
+
 def score_tweet_content(content: str) -> dict:
     """
-    Score a tweet based on its content sentiment and relevance
-    Returns a score between -100 and +100
+    Score a tweet using ChatGPT analysis
     """
-    content_lower = content.lower()
-    
-    # Positive keywords and their weights
-    positive_keywords = {
-        'amazing': 15, 'incredible': 15, 'best': 12, 'great': 10, 'excellent': 12,
-        'love': 8, 'awesome': 12, 'fantastic': 12, 'perfect': 14, 'outstanding': 14,
-        'innovative': 10, 'fast': 8, 'scalable': 10, 'smooth': 6, 'efficient': 8,
-        'brilliant': 12, 'outstanding': 14, 'superb': 12, 'wonderful': 10
-    }
-    
-    # Negative keywords and their weights
-    negative_keywords = {
-        'disappointment': -15, 'terrible': -12, 'garbage': -14, 'waste': -10,
-        'slow': -8, 'expensive': -6, 'bad': -8, 'awful': -12, 'horrible': -12,
-        'avoid': -10, 'disappointed': -12, 'frustrated': -8, 'annoying': -6,
-        'useless': -10, 'worst': -12, 'hate': -10, 'terrible': -12
-    }
-    
-    # Calculate positive score
-    positive_score = 0
-    for keyword, weight in positive_keywords.items():
-        if keyword in content_lower:
-            positive_score += weight
-    
-    # Calculate negative score
-    negative_score = 0
-    for keyword, weight in negative_keywords.items():
-        if keyword in content_lower:
-            negative_score += weight
-    
-    # Calculate total score (can be negative or positive)
-    total_score = positive_score + negative_score
-    
-    # Ensure score is between -100 and +100
-    final_score = max(-100, min(100, total_score))
-    
-    # Determine sentiment category
-    if final_score > 25:
-        sentiment = "Positive"
-    elif final_score >= -10:
-        sentiment = "Neutral"
-    else:
-        sentiment = "Negative"
+    # Use GPT for analysis
+    gpt_result = analyze_tweet_with_gpt(content)
     
     return {
-        "score": final_score,
-        "sentiment": sentiment,
-        "positive_points": positive_score,
-        "negative_points": negative_score
+        "score": gpt_result["score"],
+        "sentiment": gpt_result["sentiment"],
+        "explanation": gpt_result["explanation"],
+        "gpt_response": gpt_result.get("gpt_response")
     }
 
 # startup handler
 @agent.on_event("startup")
 async def startup_function(ctx: Context):
     ctx.logger.info(f"Hello, I'm agent {agent.name} and my address is {agent.address}.")
-    ctx.logger.info("Twitter post scoring agent is ready!")
+    ctx.logger.info("Twitter post scoring agent with GPT integration is ready!")
+    
+    # Check if OpenAI API key is available
+    if not client:
+        ctx.logger.warning("OpenAI client not found! GPT analysis will not work.")
+    else:
+        ctx.logger.info("OpenAI client found. GPT analysis is enabled.")
 
 # Message handler for scoring tweets
 @agent.on_message(Model)
@@ -102,7 +155,7 @@ async def handle_message(ctx: Context, sender: str, message: str):
                         break
                 
                 if tweet:
-                    ctx.logger.info(f"Scoring tweet #{tweet_id}...")
+                    ctx.logger.info(f"Analyzing tweet #{tweet_id} with GPT...")
                     result = score_tweet_content(tweet["content"])
                     
                     tweet_result = {
@@ -110,14 +163,16 @@ async def handle_message(ctx: Context, sender: str, message: str):
                         "score": result["score"],
                         "sentiment": result["sentiment"],
                         "tweet_id": tweet["id"],
-                        "content": tweet["content"]
+                        "content": tweet["content"],
+                        "explanation": result["explanation"],
+                        "gpt_used": result["gpt_response"] is not None
                     }
                     
                     # Send JSON response for single tweet
                     response_json = {
                         "status": "success",
                         "result": tweet_result,
-                        "message": f"Scored tweet #{tweet_id} successfully"
+                        "message": f"Analyzed tweet #{tweet_id} with GPT successfully"
                     }
                     
                     await ctx.send(sender, json.dumps(response_json, indent=2))
@@ -146,12 +201,13 @@ async def handle_message(ctx: Context, sender: str, message: str):
         help_response = {
             "status": "help",
             "available_commands": [
-                "score tweet 1 - Score the first mock tweet (positive about Flow)",
-                "score tweet 2 - Score the second mock tweet (negative about Flow)",
+                "score tweet 1 - Analyze the first mock tweet with GPT",
+                "score tweet 2 - Analyze the second mock tweet with GPT",
                 "help - Show this help message"
             ],
-            "scoring_range": "Scores range from -100 to +100",
-            "available_tweets": [t["id"] for t in mock_tweets]
+            "scoring_range": "Scores range from -100 to +100 (analyzed by GPT)",
+            "available_tweets": [t["id"] for t in mock_tweets],
+            "gpt_enabled": client is not None
         }
         await ctx.send(sender, json.dumps(help_response, indent=2))
     

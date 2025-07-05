@@ -1,114 +1,101 @@
 #!/usr/bin/env python3
 """
-Test script for Twitter Scoring Agent
-This script tests the scoring function directly without running the full agent
+Test script for GPT-powered tweet analysis
+Tests both mock tweets with ChatGPT
 """
 
 import sys
 import os
 import json
+from dotenv import load_dotenv
 
-# Add current directory to path to import from my_first_agent
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+# Load environment variables
+load_dotenv()
+
+# Add the agent directory to path
+sys.path.append(os.path.join(os.path.dirname(__file__), 'src', 'agent'))
 
 # Import the scoring function and mock tweets
 from my_first_agent import score_tweet_content, mock_tweets
 
-def test_scoring_function():
-    """Test the scoring function with mock tweets"""
-    print("=" * 60)
-    print("TWITTER SCORING AGENT TEST")
-    print("=" * 60)
+def test_gpt_analysis():
+    """Test GPT analysis on both mock tweets"""
+    print("=" * 80)
+    print("GPT TWEET ANALYSIS TEST")
+    print("=" * 80)
+    print()
+    
+    # Check if OpenAI API key is set
+    if not os.getenv("OPENAI_API_KEY"):
+        print("❌ ERROR: OPENAI_API_KEY not found in environment variables!")
+        print("Please set your OpenAI API key:")
+        print("export OPENAI_API_KEY=sk-your-key-here")
+        print("Or add it to your .env file")
+        return
+    
+    print("✅ OpenAI API key found")
     print()
     
     results = []
     
     for i, tweet in enumerate(mock_tweets, 1):
-        print(f"TESTING TWEET #{i}")
-        print("-" * 40)
+        print(f"🔍 ANALYZING TWEET #{i}")
+        print("-" * 50)
         print(f"Author: {tweet['author']}")
         print(f"Content: {tweet['content']}")
         print()
         
-        # Score the tweet
-        result = score_tweet_content(tweet['content'])
-        
-        # Create result object
-        tweet_result = {
-            "user": tweet["author"],
-            "score": result["score"],
-            "sentiment": result["sentiment"],
-            "tweet_id": tweet["id"],
-            "content": tweet["content"]
-        }
-        results.append(tweet_result)
-        
-        # Display results
-        print(f"SCORE: {result['score']}")
-        print(f"SENTIMENT: {result['sentiment']}")
-        print(f"Positive Points: {result['positive_points']}")
-        print(f"Negative Points: {result['negative_points']}")
-        print("=" * 60)
-        print()
+        try:
+            # Analyze with GPT
+            print("🤖 Sending to GPT for analysis...")
+            result = score_tweet_content(tweet['content'])
+            
+            # Create result object
+            tweet_result = {
+                "user": tweet["author"],
+                "score": result["score"],
+                "sentiment": result["sentiment"],
+                "tweet_id": tweet["id"],
+                "content": tweet["content"],
+                "explanation": result["explanation"],
+                "gpt_used": result["gpt_response"] is not None
+            }
+            results.append(tweet_result)
+            
+            # Display results
+            print(f"📊 SCORE: {result['score']}")
+            print(f"🎭 SENTIMENT: {result['sentiment']}")
+            print(f"💭 EXPLANATION: {result['explanation']}")
+            
+            if result.get("gpt_response"):
+                print(f"🤖 GPT RESPONSE: {result['gpt_response'][:200]}...")
+            
+            print("=" * 80)
+            print()
+            
+        except Exception as e:
+            print(f"❌ Error analyzing tweet #{i}: {e}")
+            print("=" * 80)
+            print()
     
     # Display final JSON result
     final_result = {
         "status": "success",
         "results": results,
+        "summary": f"Analyzed {len(results)} tweets with GPT successfully"
     }
     
-    print("FINAL JSON RESULT:")
+    print("📋 FINAL JSON RESULT:")
     print(json.dumps(final_result, indent=2))
     print()
     
     # Summary
-    print("SUMMARY:")
-    print(f"- Tweet 1 (Positive about Flow): Score {results[0]['score']}, Sentiment: {results[0]['sentiment']}")
-    print(f"- Tweet 2 (Negative about Flow): Score {results[1]['score']}, Sentiment: {results[1]['sentiment']}")
+    print("📈 SUMMARY:")
+    for i, result in enumerate(results, 1):
+        print(f"Tweet {i} ({result['sentiment']}): Score {result['score']}")
     
-    # Test custom tweets
-    print("\n" + "=" * 60)
-    print("TESTING CUSTOM TWEETS")
-    print("=" * 60)
-    
-    custom_tweets = [
-        "Flow is okay, nothing special but works fine.",
-        "I absolutely love Flow! Best blockchain ever!",
-        "Flow is the worst thing I've ever used. Hate it!",
-        "Flow blockchain exists. That's all I can say."
-    ]
-    
-    for i, tweet_content in enumerate(custom_tweets, 1):
-        print(f"\nCustom Tweet #{i}: {tweet_content}")
-        result = score_tweet_content(tweet_content)
-        print(f"Score: {result['score']}, Sentiment: {result['sentiment']}")
-
-def test_scoring_ranges():
-    """Test different score ranges to verify sentiment categories"""
-    print("\n" + "=" * 60)
-    print("TESTING SCORE RANGES")
-    print("=" * 60)
-    
-    test_scores = [-50, -25, -10, 0, 10, 25, 50, 75]
-    
-    for score in test_scores:
-        # Create a mock result with the test score
-        if score > 25:
-            sentiment = "Positive"
-        elif score >= -10:
-            sentiment = "Neutral"
-        else:
-            sentiment = "Negative"
-        
-        print(f"Score {score:3d} -> Sentiment: {sentiment}")
+    print()
+    print("✅ TEST COMPLETED!")
 
 if __name__ == "__main__":
-    try:
-        test_scoring_function()
-        test_scoring_ranges()
-        print("\n" + "=" * 60)
-        print("TEST COMPLETED SUCCESSFULLY!")
-        print("=" * 60)
-    except Exception as e:
-        print(f"Error during testing: {e}")
-        sys.exit(1) 
+    test_gpt_analysis() 
