@@ -1,11 +1,23 @@
-from uagents import Agent, Context, Model
+from uagents import Agent, Context, Model, Protocol
 import re
 import json
 import os
 import openai
 from typing import Dict, Any
+from uuid import uuid4
+from datetime import datetime
 from dotenv import load_dotenv
+
+#import the necessary components from the chat protocol
+from uagents_core.contrib.protocols.chat import (
+    ChatAcknowledgement,
+    ChatMessage,
+    TextContent,
+    chat_protocol_spec,
+)
+
 load_dotenv()
+chat_proto = Protocol(spec=chat_protocol_spec)
 
 # instantiate agent
 agent = Agent(
@@ -134,90 +146,147 @@ async def startup_function(ctx: Context):
     else:
         ctx.logger.info("OpenAI client found. GPT analysis is enabled.")
 
-# Message handler for scoring tweets
-@agent.on_message(Model)
-async def handle_message(ctx: Context, sender: str, message: str):
-    ctx.logger.info(f"Received message from {sender}: {message}")
-    
-    # Check if message is a request to score a specific tweet
-    if message.lower().startswith("score tweet"):
-        try:
-            # Extract tweet ID from message (e.g., "score tweet 1" or "score tweet 2")
-            parts = message.lower().split()
-            if len(parts) >= 3 and parts[2].isdigit():
-                tweet_id = int(parts[2])
-                
-                # Find the tweet with the specified ID
-                tweet = None
-                for t in mock_tweets:
-                    if t["id"] == tweet_id:
-                        tweet = t
-                        break
-                
-                if tweet:
-                    ctx.logger.info(f"Analyzing tweet #{tweet_id} with GPT...")
-                    result = score_tweet_content(tweet["content"])
-                    
-                    tweet_result = {
-                        "user": tweet["author"],
-                        "score": result["score"],
-                        "sentiment": result["sentiment"],
-                        "tweet_id": tweet["id"],
-                        "content": tweet["content"],
-                        "explanation": result["explanation"],
-                        "gpt_used": result["gpt_response"] is not None
-                    }
-                    
-                    # Send JSON response for single tweet
-                    response_json = {
-                        "status": "success",
-                        "result": tweet_result,
-                        "message": f"Analyzed tweet #{tweet_id} with GPT successfully"
-                    }
-                    
-                    await ctx.send(sender, json.dumps(response_json, indent=2))
-                else:
-                    error_response = {
+# Message Handler - Process received messages and send acknowledgements
+@chat_proto.on_message(ChatMessage)
+async def handle_message(ctx: Context, sender: str, msg: ChatMessage):
+    for item in msg.content:
+        if isinstance(item, TextContent):
+            # Log received message
+            ctx.logger.info(f"Received message from {sender}: {item.text}")
+            
+            # Send acknowledgment
+            ack = ChatAcknowledgement(
+                timestamp=datetime.utcnow(),
+                acknowledged_msg_id=msg.msg_id
+            )
+            await ctx.send(sender, ack)
+            
+            # Process the message content
+            message_text = item.text.lower()
+            
+            # Check if message is a request to score a specific tweet
+            if message_text.startswith("score tweet"):
+                try:
+                    # Extract tweet ID from message (e.g., "score tweet 1" or "score tweet 2")
+                    parts = message_text.split()
+                    if len(parts) >= 3 and parts[2].isdigit():
+                        tweet_id = int(parts[2])
+                        
+                        # Find the tweet with the specified ID
+                        tweet = None
+                        for t in mock_tweets:
+                            if t["id"] == tweet_id:
+                                tweet = t
+                                break
+                        
+                        if tweet:
+                            ctx.logger.info(f"Analyzing tweet #{tweet_id} with GPT...")
+                            result = score_tweet_content(tweet["content"])
+                            
+                            tweet_result = {
+                                "user": tweet["author"],
+                                "score": result["score"],
+                                "sentiment": result["sentiment"],
+                                "tweet_id": tweet["id"],
+                                "content": tweet["content"],
+                                "explanation": result["explanation"],
+                                "gpt_used": result["gpt_response"] is not None
+                            }
+                            
+                            # Send response message with tweet analysis
+                            response_text = json.dumps({
+                                "status": "success",
+                                "result": tweet_result,
+                                "message": f"Analyzed tweet #{tweet_id} with GPT successfully"
+                            }, indent=2)
+                            
+                            response = ChatMessage(
+                                timestamp=datetime.utcnow(),
+                                msg_id=str(uuid4()),
+                                content=[TextContent(type="text", text=response_text)]
+                            )
+                            await ctx.send(sender, response)
+                        else:
+                            error_text = json.dumps({
+                                "status": "error",
+                                "message": f"Tweet with ID {tweet_id} not found",
+                                "available_tweets": [t["id"] for t in mock_tweets]
+                            }, indent=2)
+                            
+                            response = ChatMessage(
+                                timestamp=datetime.utcnow(),
+                                msg_id=str(uuid4()),
+                                content=[TextContent(type="text", text=error_text)]
+                            )
+                            await ctx.send(sender, response)
+                    else:
+                        error_text = json.dumps({
+                            "status": "error",
+                            "message": "Please specify tweet ID. Use 'score tweet 1' or 'score tweet 2'",
+                            "available_tweets": [t["id"] for t in mock_tweets]
+                        }, indent=2)
+                        
+                        response = ChatMessage(
+                            timestamp=datetime.utcnow(),
+                            msg_id=str(uuid4()),
+                            content=[TextContent(type="text", text=error_text)]
+                        )
+                        await ctx.send(sender, response)
+                except Exception as e:
+                    error_text = json.dumps({
                         "status": "error",
-                        "message": f"Tweet with ID {tweet_id} not found",
-                        "available_tweets": [t["id"] for t in mock_tweets]
-                    }
-                    await ctx.send(sender, json.dumps(error_response, indent=2))
+                        "message": f"Error processing request: {str(e)}"
+                    }, indent=2)
+                    
+                    response = ChatMessage(
+                        timestamp=datetime.utcnow(),
+                        msg_id=str(uuid4()),
+                        content=[TextContent(type="text", text=error_text)]
+                    )
+                    await ctx.send(sender, response)
+            
+            elif message_text == "help":
+                help_text = json.dumps({
+                    "status": "help",
+                    "available_commands": [
+                        "score tweet 1 - Analyze the first mock tweet with GPT",
+                        "score tweet 2 - Analyze the second mock tweet with GPT",
+                        "help - Show this help message"
+                    ],
+                    "scoring_range": "Scores range from -100 to +100 (analyzed by GPT)",
+                    "available_tweets": [t["id"] for t in mock_tweets],
+                    "gpt_enabled": client is not None
+                }, indent=2)
+                
+                response = ChatMessage(
+                    timestamp=datetime.utcnow(),
+                    msg_id=str(uuid4()),
+                    content=[TextContent(type="text", text=help_text)]
+                )
+                await ctx.send(sender, response)
+            
             else:
-                error_response = {
+                error_text = json.dumps({
                     "status": "error",
-                    "message": "Please specify tweet ID. Use 'score tweet 1' or 'score tweet 2'",
-                    "available_tweets": [t["id"] for t in mock_tweets]
-                }
-                await ctx.send(sender, json.dumps(error_response, indent=2))
-        except Exception as e:
-            error_response = {
-                "status": "error",
-                "message": f"Error processing request: {str(e)}"
-            }
-            await ctx.send(sender, json.dumps(error_response, indent=2))
-    
-    elif message.lower() == "help":
-        help_response = {
-            "status": "help",
-            "available_commands": [
-                "score tweet 1 - Analyze the first mock tweet with GPT",
-                "score tweet 2 - Analyze the second mock tweet with GPT",
-                "help - Show this help message"
-            ],
-            "scoring_range": "Scores range from -100 to +100 (analyzed by GPT)",
-            "available_tweets": [t["id"] for t in mock_tweets],
-            "gpt_enabled": client is not None
-        }
-        await ctx.send(sender, json.dumps(help_response, indent=2))
-    
-    else:
-        error_response = {
-            "status": "error",
-            "message": "Unknown command. Use 'help' to see available commands.",
-            "received_message": message
-        }
-        await ctx.send(sender, json.dumps(error_response, indent=2))
+                    "message": "Unknown command. Use 'help' to see available commands.",
+                    "received_message": item.text
+                }, indent=2)
+                
+                response = ChatMessage(
+                    timestamp=datetime.utcnow(),
+                    msg_id=str(uuid4()),
+                    content=[TextContent(type="text", text=error_text)]
+                )
+                await ctx.send(sender, response)
+
+# Acknowledgement Handler - Process received acknowledgements
+@chat_proto.on_message(ChatAcknowledgement)
+async def handle_acknowledgement(ctx: Context, sender: str, msg: ChatAcknowledgement):
+    ctx.logger.info(f"Received acknowledgement from {sender} for message: {msg.acknowledged_msg_id}")
+
+# Include the protocol in the agent to enable the chat functionality
+# This allows the agent to send/receive messages and handle acknowledgements using the chat protocol
+agent.include(chat_proto, publish_manifest=True)
 
 if __name__ == "__main__":
     import sys
